@@ -1,14 +1,10 @@
 const { sendMessage } = require("../handles/sendMessage");
-const WebSocket = require("ws");
 const axios = require("axios");
 
 const activeSessions = new Map();
 const lastSentCache = new Map();
 const favoriteMap = new Map();
 const globalLastSeen = new Map();
-
-let sharedWebSocket = null;
-let keepAliveInterval = null;
 
 function formatValue(val) {
   if (val >= 1_000_000) return `x${(val / 1_000_000).toFixed(1)}M`;
@@ -57,105 +53,97 @@ function updateLastSeen(category, items) {
   }
 }
 
-function ensureWebSocketConnection() {
-  if (sharedWebSocket && sharedWebSocket.readyState === WebSocket.OPEN) return;
+async function fetchStock() {
+  try {
+    const res = await axios.get("https://growagardenstock.com/api/stock");
+    if (res.data?.status === "success" && res.data.data) {
+      return res.data.data;
+    }
+  } catch (e) {}
+  return null;
+}
 
-  sharedWebSocket = new WebSocket("wss://gagstock.gleeze.com");
+async function fetchWeather() {
+  try {
+    const res = await axios.get("https://growagardenstock.com/api/stock/weather");
+    return res.data;
+  } catch {
+    return null;
+  }
+}
 
-  sharedWebSocket.on("open", () => {
-    keepAliveInterval = setInterval(() => {
-      if (sharedWebSocket.readyState === WebSocket.OPEN) {
-        sharedWebSocket.send("ping");
-      }
-    }, 10000);
-  });
+async function processStock() {
+  const stock = await fetchStock();
+  if (!stock) return;
 
-  sharedWebSocket.on("message", async (data) => {
-    try {
-      const payload = JSON.parse(data);
-      if (payload.status !== "success" || !payload.data) return;
+  const stockData = {
+    gear: stock.gear || { items: [] },
+    seed: stock.seed || { items: [] },
+    egg: stock.egg || { items: [] },
+    cosmetics: stock.cosmetics || { items: [] },
+    event: stock.honey || { items: [] },
+    travelingmerchant: stock.travelingmerchant || { items: [] }
+  };
 
-      const stock = payload.data;
-      const stockData = {
-        gear: stock.gear || { items: [] },
-        seed: stock.seed || { items: [] },
-        egg: stock.egg || { items: [] },
-        cosmetics: stock.cosmetics || { items: [] },
-        event: stock.honey || { items: [] },
-        travelingmerchant: stock.travelingmerchant || { items: [] }
-      };
+  updateLastSeen("gear", stockData.gear.items);
+  updateLastSeen("seed", stockData.seed.items);
+  updateLastSeen("egg", stockData.egg.items);
+  updateLastSeen("cosmetics", stockData.cosmetics.items);
+  updateLastSeen("event", stockData.event.items);
+  updateLastSeen("travelingmerchant", stockData.travelingmerchant.items);
 
-      updateLastSeen("gear", stockData.gear.items);
-      updateLastSeen("seed", stockData.seed.items);
-      updateLastSeen("egg", stockData.egg.items);
-      updateLastSeen("cosmetics", stockData.cosmetics.items);
-      updateLastSeen("event", stockData.event.items);
-      updateLastSeen("travelingmerchant", stockData.travelingmerchant.items);
+  for (const [senderId, session] of activeSessions.entries()) {
+    const favList = favoriteMap.get(senderId) || [];
+    let sections = [];
+    let matchCount = 0;
 
-      for (const [senderId, session] of activeSessions.entries()) {
-        const favList = favoriteMap.get(senderId) || [];
-        let sections = [];
-        let matchCount = 0;
+    function checkAndAdd(label, section, useEmoji, altCountdown = null) {
+      const items = Array.isArray(section?.items) ? section.items.filter(i => i.quantity > 0) : [];
+      if (items.length === 0) return false;
+      const matchedItems = favList.length > 0
+        ? items.filter(i => favList.includes(cleanText(i.name)))
+        : items;
+      if (favList.length > 0 && matchedItems.length === 0) return false;
+      matchCount += matchedItems.length;
+      const restockLabel = section.countdown || altCountdown;
+      sections.push(`${label}:\n${formatItems(matchedItems, useEmoji)}${restockLabel ? `\n⏳ Restock In: ${restockLabel}` : ""}`);
+      return true;
+    }
 
-        function checkAndAdd(label, section, useEmoji, altCountdown = null) {
-          const items = Array.isArray(section?.items) ? section.items.filter(i => i.quantity > 0) : [];
-          if (items.length === 0) return false;
-          const matchedItems = favList.length > 0
-            ? items.filter(i => favList.includes(cleanText(i.name)))
-            : items;
-          if (favList.length > 0 && matchedItems.length === 0) return false;
-          matchCount += matchedItems.length;
-          const restockLabel = section.countdown || altCountdown;
-          sections.push(`${label}:\n${formatItems(matchedItems, useEmoji)}${restockLabel ? `\n⏳ Restock In: ${restockLabel}` : ""}`);
-          return true;
-        }
+    checkAndAdd("🛠️ 𝗚𝗲𝗮𝗿", stockData.gear, true);
+    checkAndAdd("🌱 𝗦𝗲𝗲𝗱𝘀", stockData.seed, true);
+    checkAndAdd("🥚 𝗘𝗴𝗴𝘀", stockData.egg, true);
+    checkAndAdd("🎨 𝗖𝗼𝘀𝗺𝗲𝘁𝗶𝗰𝘀", stockData.cosmetics, false);
+    checkAndAdd("🎉 𝗘𝘃𝗲𝗻𝘁", stockData.event, false);
+    checkAndAdd("🚚 𝗧𝗿𝗮𝘃𝗲𝗹𝗶𝗻𝗴 𝗠𝗲𝗿𝗰𝗵𝗮𝗻𝘁", stockData.travelingmerchant, false, stockData.travelingmerchant.appearIn);
 
-        checkAndAdd("🛠️ 𝗚𝗲𝗮𝗿", stockData.gear, true);
-        checkAndAdd("🌱 𝗦𝗲𝗲𝗱𝘀", stockData.seed, true);
-        checkAndAdd("🥚 𝗘𝗴𝗴𝘀", stockData.egg, true);
-        checkAndAdd("🎨 𝗖𝗼𝘀𝗺𝗲𝘁𝗶𝗰𝘀", stockData.cosmetics, false);
-        checkAndAdd("🎉 𝗘𝘃𝗲𝗻𝘁", stockData.event, false);
-        checkAndAdd("🚚 𝗧𝗿𝗮𝘃𝗲𝗹𝗶𝗻𝗴 𝗠𝗲𝗿𝗰𝗵𝗮𝗻𝘁", stockData.travelingmerchant, false, stockData.travelingmerchant.appearIn);
+    if (favList.length > 0 && matchCount === 0) continue;
+    if (sections.length === 0) continue;
 
-        if (favList.length > 0 && matchCount === 0) continue;
-        if (sections.length === 0) continue;
+    const updatedAt = getPHTime().toLocaleString("en-PH", {
+      hour: "numeric", minute: "numeric", second: "numeric",
+      hour12: true, day: "2-digit", month: "short", year: "numeric"
+    });
 
-        const updatedAt = getPHTime().toLocaleString("en-PH", {
-          hour: "numeric", minute: "numeric", second: "numeric",
-          hour12: true, day: "2-digit", month: "short", year: "numeric"
-        });
+    const weather = await fetchWeather();
+    const weatherInfo = weather
+      ? `🌤️ 𝗪𝗲𝗮𝘁𝗵𝗲𝗿: ${weather.icon} ${weather.weatherType}\n📋 ${weather.description}\n🎯 ${weather.cropBonuses}\n`
+      : "";
 
-        const weather = await axios.get("https://growagardenstock.com/api/stock/weather")
-          .then(res => res.data).catch(() => null);
+    const title = favList.length > 0
+      ? `♥️ ${matchCount} 𝗙𝗮𝘃𝗼𝗿𝗶𝘁𝗲 𝗶𝘁𝗲𝗺${matchCount > 1 ? "s" : ""} 𝗙𝗼𝘂𝗻𝗱!`
+      : "🌾 𝗚𝗿𝗼𝘄 𝗔 𝗚𝗮𝗿𝗱𝗲𝗻 — 𝗧𝗿𝗮𝗰𝗸𝗲𝗿";
 
-        const weatherInfo = weather
-          ? `🌤️ 𝗪𝗲𝗮𝘁𝗵𝗲𝗿: ${weather.icon} ${weather.weatherType}\n📋 ${weather.description}\n🎯 ${weather.cropBonuses}\n`
-          : "";
+    const messageKey = JSON.stringify({ title, sections, weatherInfo, updatedAt });
+    const lastSent = lastSentCache.get(senderId);
+    if (lastSent === messageKey) continue;
 
-        const title = favList.length > 0
-          ? `♥️ ${matchCount} 𝗙𝗮𝘃𝗼𝗿𝗶𝘁𝗲 𝗶𝘁𝗲𝗺${matchCount > 1 ? "s" : ""} 𝗙𝗼𝘂𝗻𝗱!`
-          : "🌾 𝗚𝗿𝗼𝘄 𝗔 𝗚𝗮𝗿𝗱𝗲𝗻 — 𝗧𝗿𝗮𝗰𝗸𝗲𝗿";
+    lastSentCache.set(senderId, messageKey);
 
-        const messageKey = JSON.stringify({ title, sections, weatherInfo, updatedAt });
-        const lastSent = lastSentCache.get(senderId);
-        if (lastSent === messageKey) continue;
-
-        lastSentCache.set(senderId, messageKey);
-
-        await sendMessage(senderId, {
-          text: `${title}\n\n${sections.join("\n\n")}\n\n${weatherInfo}📅 Updated at (PH): ${updatedAt}`
-        }, session.pageAccessToken);
-      }
-    } catch {}
-  });
-
-  sharedWebSocket.on("close", () => {
-    clearInterval(keepAliveInterval);
-    sharedWebSocket = null;
-    setTimeout(ensureWebSocketConnection, 3000);
-  });
-
-  sharedWebSocket.on("error", () => sharedWebSocket?.close());
+    await sendMessage(senderId, {
+      text: `${title}\n\n${sections.join("\n\n")}\n\n${weatherInfo}📅 Updated at (PH): ${updatedAt}`
+    }, session.pageAccessToken);
+  }
 }
 
 async function fetchPredict(params) {
@@ -193,11 +181,11 @@ function formatPredictData(data, filters = []) {
 }
 
 module.exports = {
-  name: "gagstock",               // required: unique command name
-  description: "Track Grow A Garden stock with favorites, shared WebSocket, last seen, and prediction support.",  
+  name: "gagstock",
+  description: "Track Grow A Garden stock with favorites, last seen, and prediction support (polling instead of WebSocket).",  
   usage: "gagstock on | gagstock off | gagstock fav add Item1 | gagstock lastseen gear | gagstock predict seed | gagstock predict carrot",  
-  author: "Your Name",            // optional
-  category: "tools",              // must match your system
+  author: "Your Name",
+  category: "tools",
 
   async execute(senderId, args, pageAccessToken) {
     const subcmd = args[0]?.toLowerCase();
@@ -304,7 +292,10 @@ module.exports = {
     }
 
     activeSessions.set(senderId, { pageAccessToken });
-    await sendMessage(senderId, { text: "✅ Gagstock tracking started via WebSocket!" }, pageAccessToken);
-    ensureWebSocketConnection();
+    await sendMessage(senderId, { text: "✅ Gagstock tracking started via polling every 15s!" }, pageAccessToken);
+
+    // Poll every 15 seconds
+    if (!global.pollInterval) {
+      global.pollInterval = setInterval(processStock, 15000);
+    }
   }
-};
