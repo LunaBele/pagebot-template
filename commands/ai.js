@@ -42,7 +42,7 @@ module.exports = {
 };
 
 const handlePixtralResponse = async (senderId, input, pageAccessToken) => {
-  const apiKey = "GET YOUR API > https://kaiz-apis.gleeze.com";
+  const apiKey = "8ea74b4d-ff0e-4e22-b1a8-ee7f52e97863";
   const url = `https://kaiz-apis.gleeze.com/api/pixtral-12b?q=${encodeURIComponent(input)}&uid=${senderId}&apikey=${apiKey}`;
 
   try {
