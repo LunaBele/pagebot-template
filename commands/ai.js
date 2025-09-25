@@ -1,125 +1,148 @@
-const axios = require("axios");
-const { sendMessage } = require("../handles/sendMessage");
-const fs = require("fs");
+// ===============================
+// GROW A GARDEN COMMAND (stock + weather + auto updates in PH)
+// ===============================
 
-const token = fs.readFileSync("token.txt", "utf8");
+const axios = require('axios');
+const { sendMessage } = require('../handles/sendMessage');
 
-const fontMapping = {
-  'A': '𝗔', 'B': '𝗕', 'C': '𝗖', 'D': '𝗗', 'E': '𝗘', 'F': '𝗙', 'G': '𝗚',
-  'H': '𝗛', 'I': '𝗜', 'J': '𝗝', 'K': '𝗞', 'L': '𝗟', 'M': '𝗠', 'N': '𝗡',
-  'O': '𝗢', 'P': '𝗣', 'Q': '𝗤', 'R': '𝗥', 'S': '𝗦', 'T': '𝗧', 'U': '𝗨',
-  'V': '𝗩', 'W': '𝗪', 'X': '𝗫', 'Y': '𝗬', 'Z': '𝗭',
-  'a': '𝗮', 'b': '𝗯', 'c': '𝗰', 'd': '𝗱', 'e': '𝗲', 'f': '𝗳', 'g': '𝗴',
-  'h': '𝗵', 'i': '𝗶', 'j': '𝗷', 'k': '𝗸', 'l': '𝗹', 'm': '𝗺', 'n': '𝗻',
-  'o': '𝗼', 'p': '𝗽', 'q': '𝗾', 'r': '𝗿', 's': '𝘀', 't': '𝘁', 'u': '𝘂',
-  'v': '𝘃', 'w': '𝘄', 'x': '𝘅', 'y': '𝘆', 'z': '𝘇'
-};
+// Track users who enabled auto updates
+const autoUpdateUsers = new Map(); // key = senderId, value = intervalId
 
-function convertToBold(text) {
-  return text.replace(/(?:\*\*(.*?)\*\*|## (.*?)|### (.*?))/g, (match, boldText, h2Text, h3Text) => {
-    const targetText = boldText || h2Text || h3Text;
-    return [...targetText].map(char => fontMapping[char] || char).join('');
-  });
+function formatDatePH(timestamp) {
+  return new Date(timestamp).toLocaleString("en-PH", { timeZone: "Asia/Manila" });
+}
+
+function formatTimePH(timestamp) {
+  return new Date(timestamp).toLocaleTimeString("en-PH", { timeZone: "Asia/Manila" });
+}
+
+async function fetchAndSendStock(senderId, pageAccessToken) {
+  try {
+    const res = await axios.get('https://growagardenstock.com/api/stock');
+    if (!res.data) return;
+    
+    const { updatedAt, gear = [], seeds = [], egg = [] } = res.data;
+    const updatedDate = updatedAt ? formatDatePH(updatedAt) : "Unknown";
+    
+    const gearList = gear.length > 0 ? gear.map(i => `• ${i}`).join('\n') : "None";
+    const seedList = seeds.length > 0 ? seeds.map(i => `• ${i}`).join('\n') : "None";
+    const eggList = egg.length > 0 ? egg.map(i => `• ${i}`).join('\n') : "None";
+    
+    const message =
+      `🌱 Grow A Garden Stock (Auto Update)
+
+🛠️ Gear:
+${gearList}
+
+🌾 Seeds:
+${seedList}
+
+🥚 Eggs:
+${eggList}
+
+📅 Updated: ${updatedDate} (PH)`;
+    
+    await sendMessage(senderId, { text: message }, pageAccessToken);
+  } catch (err) {
+    console.error("Auto stock fetch error:", err.message);
+  }
 }
 
 module.exports = {
-  name: "ai",
-  description: "Ask Gabi (AI) for a response or explanation.",
-  usage: 'Send message prompt',
-  category: 'ai',
-  author: "Tianji",
-
+  name: 'gag',
+  description: 'Shows Grow A Garden stock, weather, or toggles auto stock updates.',
+  usage: 'gag -stock | gag -weather | gag -on | gag -off',
+  author: 'Mart',
+  category: 'tools',
+  
   async execute(senderId, args, pageAccessToken) {
-    const prompt = args.join(" ");
-    if (!prompt) {
+    try {
+      if (args.length === 0) {
+        return sendMessage(senderId, {
+          text: "❌ Please specify an option:\n• gag -stock\n• gag -weather\n• gag -on\n• gag -off"
+        }, pageAccessToken);
+      }
+      
+      const option = args[0].toLowerCase();
+      
+      // ================= STOCK =================
+      if (option === "-stock") {
+        return fetchAndSendStock(senderId, pageAccessToken);
+      }
+      
+      // ================= WEATHER =================
+      if (option === "-weather") {
+        const res = await axios.get('https://growagardenstock.com/api/stock/weather');
+        if (!res.data) {
+          return sendMessage(senderId, { text: "❌ Failed to fetch weather data." }, pageAccessToken);
+        }
+        
+        const w = res.data;
+        const weatherDate = w.updatedAt ? formatDatePH(w.updatedAt) : "Unknown";
+        const weatherEnd = w.endTime ? formatTimePH(w.endTime) : "Unknown";
+        
+        const mutations = Array.isArray(w.mutations) && w.mutations.length > 0 ?
+          w.mutations.map(m => `• ${m}`).join('\n') :
+          "None";
+        
+        const message =
+          `⛅ Grow A Garden Weather
+
+${w.icon || ''} ${w.currentWeather || 'Unknown'}
+${w.description || 'No description.'}
+
+🌱 Effect: ${w.effectDescription || 'N/A'}
+🎭 Visual Cue: ${w.visualCue || 'N/A'}
+🌾 Crop Bonuses: ${w.cropBonuses || 'N/A'}
+
+🧬 Mutations:
+${mutations}
+
+✨ Rarity: ${w.rarity || 'N/A'}
+⏰ Ends: ${weatherEnd} (PH)
+📅 Updated: ${weatherDate} (PH)`;
+        
+        return sendMessage(senderId, { text: message }, pageAccessToken);
+      }
+      
+      // ================= AUTO STOCK UPDATES =================
+      if (option === "-on") {
+        if (autoUpdateUsers.has(senderId)) {
+          return sendMessage(senderId, { text: "⚠️ Auto stock updates are already ON." }, pageAccessToken);
+        }
+        
+        // Immediately send first stock
+        await fetchAndSendStock(senderId, pageAccessToken);
+        
+        // Start sending every 5 minutes (300000 ms)
+        const intervalId = setInterval(() => {
+          fetchAndSendStock(senderId, pageAccessToken);
+        }, 300000);
+        
+        autoUpdateUsers.set(senderId, intervalId);
+        
+        return sendMessage(senderId, { text: "✅ Auto stock updates enabled. You will get updates every 5 minutes." }, pageAccessToken);
+      }
+      
+      if (option === "-off") {
+        if (!autoUpdateUsers.has(senderId)) {
+          return sendMessage(senderId, { text: "⚠️ Auto stock updates are already OFF." }, pageAccessToken);
+        }
+        
+        clearInterval(autoUpdateUsers.get(senderId));
+        autoUpdateUsers.delete(senderId);
+        
+        return sendMessage(senderId, { text: "🛑 Auto stock updates disabled." }, pageAccessToken);
+      }
+      
+      // If invalid flag
       return sendMessage(senderId, {
-        text: "❌ 𝗘𝗿𝗿𝗼𝗿: 𝗘𝗻𝘁𝗲𝗿 𝗮 𝗽𝗿𝗼𝗺𝗽𝘁 𝘁𝗼 𝗮𝘀𝗸 𝗚𝗮𝗯𝗶."
+        text: "❌ Invalid option. Use:\n• gag -stock\n• gag -weather\n• gag -on\n• gag -off"
       }, pageAccessToken);
-    }
-
-    await handleGabiResponse(senderId, prompt, pageAccessToken);
-  }
-};
-
-// === Core Gabi Response Handler ===
-const handleGabiResponse = async (senderId, input, pageAccessToken) => {
-  const lowerInput = input.toLowerCase();
-
-  // If user asks "who is" or "what is" → Wikipedia search
-  if (lowerInput.startsWith("gabi who is") || lowerInput.startsWith("gabi what is")) {
-    let topic = input.replace(/gabi (who|what) is/i, "").trim();
-    if (!topic) topic = "Grow a Garden"; // default topic
-
-    const summary = await fetchWikipediaSummary(topic);
-    if (summary) {
-      const gabiReply = `🌱 𝗚𝗔𝗕𝗜\n─────────────\nHere’s what I found about **${summary.title}**:\n${summary.extract}\n─────────────`;
-      const formatted = convertToBold(gabiReply);
-      await sendConcatenatedMessage(senderId, formatted, pageAccessToken);
-      return;
+      
+    } catch (error) {
+      console.error("gag command error:", error.message);
+      await sendMessage(senderId, { text: `❌ Error:\n${error.message}` }, pageAccessToken);
     }
   }
-
-  // Default → use Pixtral AI
-  await handlePixtralResponse(senderId, input, pageAccessToken);
-};
-
-// === Wikipedia Fetch ===
-const fetchWikipediaSummary = async (topic) => {
-  try {
-    const url = `https://en.wikipedia.org/w/api.php` +
-      `?action=query&prop=extracts&exintro=1&explaintext=1` +
-      `&redirects=1&titles=${encodeURIComponent(topic)}` +
-      `&format=json&origin=*`;
-
-    const { data } = await axios.get(url);
-    const pages = data.query?.pages;
-    if (!pages) return null;
-
-    const page = Object.values(pages)[0];
-    if (!page || !page.extract) return null;
-
-    return { title: page.title, extract: page.extract };
-  } catch (error) {
-    console.error("Wikipedia API error:", error.message);
-    return null;
-  }
-};
-
-// === Pixtral AI (fallback) ===
-const handlePixtralResponse = async (senderId, input, pageAccessToken) => {
-  const apiKey = "8ea74b4d-ff0e-4e22-b1a8-ee7f52e97863";
-  const url = `https://kaiz-apis.gleeze.com/api/pixtral-12b?q=${encodeURIComponent(input)}&uid=${senderId}&apikey=${apiKey}`;
-
-  try {
-    const { data } = await axios.get(url);
-    const responseText = data.content || "❌ No response from Pixtral AI.";
-
-    const decoratedResponse = `🌱 𝗚𝗔𝗕𝗜\n─────────────\n${responseText}\n─────────────`;
-    const formatted = convertToBold(decoratedResponse);
-
-    await sendConcatenatedMessage(senderId, formatted, pageAccessToken);
-  } catch (error) {
-    console.error("Pixtral API error:", error.message);
-    return sendMessage(senderId, {
-      text: "❌ 𝗘𝗿𝗿𝗼𝗿: 𝗨𝗻𝗮𝗯𝗹𝗲 𝘁𝗼 𝗴𝗲𝘁 𝗮 𝗿𝗲𝘀𝗽𝗼𝗻𝘀𝗲."
-    }, pageAccessToken);
-  }
-};
-
-// === Message Chunking ===
-const sendConcatenatedMessage = async (senderId, text, pageAccessToken) => {
-  const maxLength = 2000;
-  const chunks = splitMessageIntoChunks(text, maxLength);
-  for (const msg of chunks) {
-    await sendMessage(senderId, { text: msg }, pageAccessToken);
-    await new Promise(resolve => setTimeout(resolve, 500));
-  }
-};
-
-const splitMessageIntoChunks = (message, chunkSize) => {
-  const chunks = [];
-  for (let i = 0; i < message.length; i += chunkSize) {
-    chunks.push(message.slice(i, i + chunkSize));
-  }
-  return chunks;
 };
