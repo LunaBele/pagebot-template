@@ -145,7 +145,6 @@ function ensureWebSocketConnection() {
         await sendMessage(senderId, {
           text: `${title}\n\n${sections.join("\n\n")}\n\n${weatherInfo}📅 Updated at (PH): ${updatedAt}`
         }, session.pageAccessToken);
-
       }
     } catch {}
   });
@@ -194,123 +193,118 @@ function formatPredictData(data, filters = []) {
 }
 
 module.exports = {
-  name: "gagstock",
-  description: "Track Grow A Garden stock with favorites, shared WebSocket, global lastseen and gagstock predict support.",
-  usage: "gagstock on | gagstock off | gagstock fav add Item1 | gagstock lastseen gear | egg | gagstock predict | gagstock predict seed | gagstock predict gear | gagstock predict egg | gagstock predict carrot | watering can",
-  category: "tools",
+  name: "gagstock",               // required: unique command name
+  description: "Track Grow A Garden stock with favorites, shared WebSocket, last seen, and prediction support.",  
+  usage: "gagstock on | gagstock off | gagstock fav add Item1 | gagstock lastseen gear | gagstock predict seed | gagstock predict carrot",  
+  author: "Your Name",            // optional
+  category: "tools",              // must match your system
 
   async execute(senderId, args, pageAccessToken) {
-    try {
-      const subcmd = args[0]?.toLowerCase();
+    const subcmd = args[0]?.toLowerCase();
 
-      if (subcmd === "fav") {
-        const action = args[1]?.toLowerCase();
-        const input = args.slice(2).join(" ").split("|").map(i => cleanText(i)).filter(Boolean);
-        if (!action || !["add", "remove"].includes(action) || input.length === 0) {
-          return sendMessage(senderId, { text: "📌 Usage: gagstock fav add/remove Item1 | Item2" }, pageAccessToken);
-        }
-        const currentFav = favoriteMap.get(senderId) || [];
-        const updated = new Set(currentFav);
-        for (const name of input) {
-          if (action === "add") updated.add(name);
-          else if (action === "remove") updated.delete(name);
-        }
-        favoriteMap.set(senderId, Array.from(updated));
-        return sendMessage(senderId, { text: `✅ Favorite list updated: ${Array.from(updated).join(", ") || "(empty)"}` }, pageAccessToken);
+    if (subcmd === "fav") {
+      const action = args[1]?.toLowerCase();
+      const input = args.slice(2).join(" ").split("|").map(i => cleanText(i)).filter(Boolean);
+      if (!action || !["add", "remove"].includes(action) || input.length === 0) {
+        return sendMessage(senderId, { text: "📌 Usage: gagstock fav add/remove Item1 | Item2" }, pageAccessToken);
       }
-
-      if (subcmd === "lastseen") {
-        const filters = args.slice(1).join(" ").split("|").map(c => c.trim().toLowerCase()).filter(Boolean);
-        const categories = filters.length > 0 ? filters : ["gear", "seed", "egg", "cosmetics", "event", "travelingmerchant"];
-
-        let result = [];
-        for (const cat of categories) {
-          const entries = globalLastSeen.get(cat);
-          if (!entries || entries.size === 0) continue;
-
-          const list = Array.from(entries.entries())
-            .sort((a, b) => new Date(b[1]) - new Date(a[1]))
-            .map(([name, date]) => `• ${name}: ${getTimeAgo(date)}`);
-
-          result.push(`🔹 ${cat.toUpperCase()} (${list.length})\n${list.join("\n")}`);
-        }
-
-        if (result.length === 0) {
-          return sendMessage(senderId, { text: "⚠️ No last seen data found for the selected category." }, pageAccessToken);
-        }
-
-        return sendMessage(senderId, { text: `📦 𝗟𝗮𝘀𝘁 𝗦𝗲𝗲𝗻 𝗜𝘁𝗲𝗺𝘀\n\n${result.join("\n\n")}` }, pageAccessToken);
+      const currentFav = favoriteMap.get(senderId) || [];
+      const updated = new Set(currentFav);
+      for (const name of input) {
+        if (action === "add") updated.add(name);
+        else if (action === "remove") updated.delete(name);
       }
-
-      if (subcmd === "off") {
-        if (!activeSessions.has(senderId)) {
-          return sendMessage(senderId, { text: "⚠️ You don't have an active gagstock session." }, pageAccessToken);
-        }
-        activeSessions.delete(senderId);
-        lastSentCache.delete(senderId);
-        return sendMessage(senderId, { text: "🛑 Gagstock tracking stopped." }, pageAccessToken);
-      }
-
-      if (subcmd === "predict") {
-        const inputFilters = args.slice(1).join(" ").split("|").map(i => cleanText(i)).filter(Boolean);
-
-        const allowedTypes = ["seed", "gear", "egg"];
-        const filters = [];
-        const items = [];
-
-        for (const f of inputFilters) {
-          if (allowedTypes.includes(f)) filters.push(f);
-          else items.push(f);
-        }
-
-        let query = "";
-        if (filters.length === 0 && items.length === 0) {
-          query = "seed|gear|egg";
-        } else {
-          const parts = [];
-          if (filters.length > 0) parts.push(filters.join("|"));
-          if (items.length > 0) parts.push(items.join("|"));
-          query = parts.join("|");
-        }
-
-        const data = await fetchPredict({ q: query });
-        if (!data) return sendMessage(senderId, { text: "⚠️ Failed to fetch predictions from API." }, pageAccessToken);
-
-        if (items.length > 0) {
-          for (const cat of ["seed", "gear", "egg"]) {
-            if (data[cat]) {
-              data[cat] = data[cat].filter(i => items.includes(cleanText(i.name)));
-            }
-          }
-        }
-
-        if (filters.length > 0) {
-          for (const cat of ["seed", "gear", "egg"]) {
-            if (!filters.includes(cat)) data[cat] = [];
-          }
-        }
-
-        const formatted = formatPredictData(data, filters.length > 0 ? filters : ["seed", "gear", "egg"]);
-        return sendMessage(senderId, { text: formatted }, pageAccessToken);
-      }
-
-      if (subcmd !== "on") {
-        return sendMessage(senderId, {
-          text: "📌 Usage:\n• gagstock on\n• gagstock fav add Carrot | Watering Can\n• gagstock lastseen gear | seed\n• gagstock predict\n• gagstock predict seed\n• gagstock predict gear | egg\n• gagstock predict carrot | watering can\n• gagstock off"
-        }, pageAccessToken);
-      }
-
-      if (activeSessions.has(senderId)) {
-        return sendMessage(senderId, { text: "📡 You're already tracking Gagstock. Use gagstock off to stop." }, pageAccessToken);
-      }
-
-      activeSessions.set(senderId, { pageAccessToken });
-      await sendMessage(senderId, { text: "✅ Gagstock tracking started via WebSocket!" }, pageAccessToken);
-      ensureWebSocketConnection();
-    } catch (err) {
-      console.error(`[${this.name}] Error:`, err.message);
-      const { sendMessage } = require("../handles/sendMessage");
-      await sendMessage(senderId, { text: `❌ Error: ${err.message}` }, pageAccessToken);
+      favoriteMap.set(senderId, Array.from(updated));
+      return sendMessage(senderId, { text: `✅ Favorite list updated: ${Array.from(updated).join(", ") || "(empty)"}` }, pageAccessToken);
     }
+
+    if (subcmd === "lastseen") {
+      const filters = args.slice(1).join(" ").split("|").map(c => c.trim().toLowerCase()).filter(Boolean);
+      const categories = filters.length > 0 ? filters : ["gear", "seed", "egg", "cosmetics", "event", "travelingmerchant"];
+
+      let result = [];
+      for (const cat of categories) {
+        const entries = globalLastSeen.get(cat);
+        if (!entries || entries.size === 0) continue;
+
+        const list = Array.from(entries.entries())
+          .sort((a, b) => new Date(b[1]) - new Date(a[1]))
+          .map(([name, date]) => `• ${name}: ${getTimeAgo(date)}`);
+
+        result.push(`🔹 ${cat.toUpperCase()} (${list.length})\n${list.join("\n")}`);
+      }
+
+      if (result.length === 0) {
+        return sendMessage(senderId, { text: "⚠️ No last seen data found for the selected category." }, pageAccessToken);
+      }
+
+      return sendMessage(senderId, { text: `📦 𝗟𝗮𝘀𝘁 𝗦𝗲𝗲𝗻 𝗜𝘁𝗲𝗺𝘀\n\n${result.join("\n\n")}` }, pageAccessToken);
+    }
+
+    if (subcmd === "off") {
+      if (!activeSessions.has(senderId)) {
+        return sendMessage(senderId, { text: "⚠️ You don't have an active gagstock session." }, pageAccessToken);
+      }
+      activeSessions.delete(senderId);
+      lastSentCache.delete(senderId);
+      return sendMessage(senderId, { text: "🛑 Gagstock tracking stopped." }, pageAccessToken);
+    }
+
+    if (subcmd === "predict") {
+      const inputFilters = args.slice(1).join(" ").split("|").map(i => cleanText(i)).filter(Boolean);
+
+      const allowedTypes = ["seed", "gear", "egg"];
+      const filters = [];
+      const items = [];
+
+      for (const f of inputFilters) {
+        if (allowedTypes.includes(f)) filters.push(f);
+        else items.push(f);
+      }
+
+      let query = "";
+      if (filters.length === 0 && items.length === 0) {
+        query = "seed|gear|egg";
+      } else {
+        const parts = [];
+        if (filters.length > 0) parts.push(filters.join("|"));
+        if (items.length > 0) parts.push(items.join("|"));
+        query = parts.join("|");
+      }
+
+      const data = await fetchPredict({ q: query });
+      if (!data) return sendMessage(senderId, { text: "⚠️ Failed to fetch predictions from API." }, pageAccessToken);
+
+      if (items.length > 0) {
+        for (const cat of ["seed", "gear", "egg"]) {
+          if (data[cat]) {
+            data[cat] = data[cat].filter(i => items.includes(cleanText(i.name)));
+          }
+        }
+      }
+
+      if (filters.length > 0) {
+        for (const cat of ["seed", "gear", "egg"]) {
+          if (!filters.includes(cat)) data[cat] = [];
+        }
+      }
+
+      const formatted = formatPredictData(data, filters.length > 0 ? filters : ["seed", "gear", "egg"]);
+      return sendMessage(senderId, { text: formatted }, pageAccessToken);
+    }
+
+    if (subcmd !== "on") {
+      return sendMessage(senderId, {
+        text: "📌 Usage:\n• gagstock on\n• gagstock fav add Carrot | Watering Can\n• gagstock lastseen gear | seed\n• gagstock predict\n• gagstock predict seed\n• gagstock predict gear | egg\n• gagstock predict carrot | watering can\n• gagstock off"
+      }, pageAccessToken);
+    }
+
+    if (activeSessions.has(senderId)) {
+      return sendMessage(senderId, { text: "📡 You're already tracking Gagstock. Use gagstock off to stop." }, pageAccessToken);
+    }
+
+    activeSessions.set(senderId, { pageAccessToken });
+    await sendMessage(senderId, { text: "✅ Gagstock tracking started via WebSocket!" }, pageAccessToken);
+    ensureWebSocketConnection();
   }
 };
