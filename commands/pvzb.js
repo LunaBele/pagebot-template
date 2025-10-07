@@ -1,5 +1,5 @@
 // ===============================
-// PLANTS VS BRAINROTS COMMAND (stock monitor + auto updates in PH)
+// PLANTS VS BRAINROTS COMMAND (stock monitor + auto updates synced to 5-min marks)
 // ===============================
 
 const axios = require("axios");
@@ -87,9 +87,33 @@ async function fetchAndSendPvBStock(senderId, pageAccessToken) {
   return data;
 }
 
+// Aligns interval to nearest 5-minute mark (00, 05, 10, 15, ...)
+function scheduleNextFiveMinuteSync(callback) {
+  const now = new Date();
+  const ms = now.getTime();
+  
+  // Compute milliseconds until next 5-min mark
+  const next = new Date(ms);
+  const minute = now.getMinutes();
+  const nextMinuteMark = Math.ceil(minute / 5) * 5;
+  next.setMinutes(nextMinuteMark, 0, 0);
+  
+  // If already exactly on mark (like 12:05:00), go to next one
+  if (next <= now) next.setMinutes(next.getMinutes() + 5, 0, 0);
+  
+  const delay = next - now;
+  
+  // Run once at the next mark
+  setTimeout(() => {
+    callback();
+    // Then repeat every 5 minutes exactly on the marks
+    setInterval(callback, 5 * 60 * 1000);
+  }, delay);
+}
+
 module.exports = {
   name: "pvzb",
-  description: "Shows Plants vs Brainrots stock or toggles auto updates when stock changes.",
+  description: "Shows Plants vs Brainrots stock or toggles auto updates synced to PH 5-min marks.",
   usage: "pvzb -stock | pvzb -on | pvzb -off",
   author: "Mart",
   category: "tools",
@@ -117,24 +141,34 @@ module.exports = {
         
         const initialData = await fetchAndSendPvBStock(senderId, pageAccessToken);
         
-        const intervalId = setInterval(async () => {
-          const newData = await fetchPvBStock();
-          if (!newData) return;
-          
-          const userData = autoUpdateUsers.get(senderId);
-          const oldData = userData ? userData.lastData : null;
-          
-          if (hasStockChanged(oldData, newData)) {
-            const msg = formatStockMessage(newData);
-            await sendMessage(senderId, { text: msg }, pageAccessToken);
-            userData.lastData = newData;
-            autoUpdateUsers.set(senderId, userData);
-          }
-        }, 300000); // every 5 minutes
+        // Schedule next updates synced to 5-min marks
+        const syncTask = () => {
+          (async () => {
+            const newData = await fetchPvBStock();
+            if (!newData) return;
+            
+            const userData = autoUpdateUsers.get(senderId);
+            if (!userData) return; // If turned off during wait, skip.
+            
+            const oldData = userData.lastData;
+            if (hasStockChanged(oldData, newData)) {
+              const msg = formatStockMessage(newData);
+              await sendMessage(senderId, { text: msg }, pageAccessToken);
+              userData.lastData = newData;
+              autoUpdateUsers.set(senderId, userData);
+            }
+          })();
+        };
         
-        autoUpdateUsers.set(senderId, { intervalId, lastData: initialData });
+        // Schedule for next exact 5-min mark
+        scheduleNextFiveMinuteSync(syncTask);
         
-        return sendMessage(senderId, { text: "✅ Auto PvB stock updates enabled. You'll receive updates only when stock changes." }, pageAccessToken);
+        // Mark as active
+        autoUpdateUsers.set(senderId, { intervalId: true, lastData: initialData });
+        
+        return sendMessage(senderId, {
+          text: "✅ Auto PvB stock updates enabled. Updates will send every 5 minutes (on the clock) when stock changes.",
+        }, pageAccessToken);
       }
       
       // ================= AUTO UPDATES OFF =================
@@ -143,8 +177,6 @@ module.exports = {
           return sendMessage(senderId, { text: "⚠️ Auto stock updates are already OFF." }, pageAccessToken);
         }
         
-        const { intervalId } = autoUpdateUsers.get(senderId);
-        clearInterval(intervalId);
         autoUpdateUsers.delete(senderId);
         
         return sendMessage(senderId, { text: "🛑 Auto PvB stock updates disabled." }, pageAccessToken);
